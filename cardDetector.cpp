@@ -15,7 +15,7 @@
 using namespace std;
 using namespace cv;
 
-//#define WINDOW_NAME "Thresholded image"
+#define WINDOW_NAME "Thresholded image"
 
 typedef struct qcard_ {
     string rank;
@@ -47,7 +47,7 @@ int SUIT_WIDTH = 70;
 int SUIT_HEIGHT = 95;
 
 int RANK_DIFF_MAX = 2000;
-int SUIT_DIFF_MAX = 700;
+int SUIT_DIFF_MAX = 1000;
 
 int CARD_MAX_AREA = 280000;
 int CARD_MIN_AREA = 80000;
@@ -486,14 +486,14 @@ qcard match_card(qcard card, vector<train_image> train_ranks, vector<train_image
         // Difference the query card rank image from each of the train rank images,
         // and store the result with the least difference
         for (int i = 0; i < train_ranks.size(); i++) {
-            cout << card.rank_img.size() << " : " << train_ranks[i].image.size() << "\n";
+            //cout << card.rank_img.size() << " : " << train_ranks[i].image.size() << "\n";
 
             Mat diff_img;
             absdiff(card.rank_img, train_ranks[i].image, diff_img);
             int rank_diff = (int)(sum(diff_img)[0]/255);
 
 
-            cout << rank_diff << "\n";
+            //cout << rank_diff << "\n";
             
             if (rank_diff < best_rank_match_diff) {
 
@@ -511,13 +511,13 @@ qcard match_card(qcard card, vector<train_image> train_ranks, vector<train_image
 
         // Same process with suit images
         for (int i = 0; i < train_suits.size(); i++) {
-            cout << card.suit_img.size() << " : " << train_suits[i].image.size() << "\n";
+            //cout << card.suit_img.size() << " : " << train_suits[i].image.size() << "\n";
 
             Mat diff_img;
             absdiff(card.suit_img, train_suits[i].image, diff_img);
             int suit_diff = (sum(diff_img)[0]/255);
 
-            cout << suit_diff << "\n";
+            //cout << suit_diff << "\n";
             
             if (suit_diff < best_suit_match_diff) {
 
@@ -549,8 +549,8 @@ qcard match_card(qcard card, vector<train_image> train_ranks, vector<train_image
         card.suit = best_suit_match_name;
     }
 
-    cout << "diff: " << best_rank_match_diff << " | " << best_suit_match_diff << "\n";
-    cout << "diff: " << best_rank_match_name << " | " << best_suit_match_name << "\n";
+    //cout << "diff: " << best_rank_match_diff << " | " << best_suit_match_diff << "\n";
+    //cout << "diff: " << best_rank_match_name << " | " << best_suit_match_name << "\n";
 
     // Return the identiy of the card and the quality of the suit and rank match
     //return best_rank_match_name, best_suit_match_name, best_rank_match_diff, best_suit_match_diff
@@ -676,8 +676,10 @@ int main(int argc, char** argv) {
         //drawing = getSuitRank(image, GET_RANK);
 
         /*
+
         */
-        imshow("bla", thresh);
+        resize(thresh, thresh, Size(720, 1080));
+        imshow(WINDOW_NAME, thresh);
         
         
         //if (waitKey(30) >= 0)
