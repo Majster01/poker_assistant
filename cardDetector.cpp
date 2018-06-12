@@ -17,20 +17,25 @@ using namespace cv;
 
 #define WINDOW_NAME "Thresholded image"
 
+// struktura s katero shranjujem podatke o zaznanih kartah
 typedef struct qcard_ {
-    string rank;
-    string suit;
+    char* rank;
+    char* suit;
     Mat rank_img;
     Mat suit_img;
     vector<Point> contour;
+    Point center;
+    int detected;
 
 } qcard;
 
+// struktura v kateri hranim testne slike
 typedef struct train_image_ {
-    string name;
+    char* name;
     Mat image;
 } train_image;
 
+// pot do testnih slik
 string img_path = "./train_files/";
 
 int GET_SUIT = 0;
@@ -38,7 +43,6 @@ int GET_RANK = 1;
 
 int BKG_THRESH = 60;
 int CARD_THRESH = 30;
-
 
 int RANK_WIDTH = 75;
 int RANK_HEIGHT = 105;
@@ -49,14 +53,30 @@ int SUIT_HEIGHT = 95;
 int RANK_DIFF_MAX = 2000;
 int SUIT_DIFF_MAX = 1000;
 
-int CARD_MAX_AREA = 280000;
-int CARD_MIN_AREA = 80000;
+int CARD_MAX_AREA = 200000;
+int CARD_MIN_AREA = 50000;
 
 int threshold_value = 170;
 int threshold_type = THRESH_BINARY;
 
-//imena cifer/grbov
-vector<string> test_names;
+Scalar borderColor = Scalar(255, 255, 255);
+Scalar borderOnlineColor = Scalar(0, 255, 0);
+Scalar borderOfflineColor = Scalar(0, 0, 255);
+
+#define middle '0'
+#define player1 '1'
+#define player2 '2'
+#define player3 '3'
+#define player4 '4'
+#define player5 '5'
+#define player6 '6'
+
+// deklaracija tabele z imeni cifer/grbov
+char** test_names;
+
+// deklaracija testnih slik
+vector<train_image> train_ranks;
+vector<train_image> train_suits;
     
 
 //morphology
@@ -69,6 +89,7 @@ int dilation_size = 2;
 
 Scalar color = (100,100,0);
 
+
 #ifdef ADAPTIVE
 int block_size = 15;
 int threshold_adaptive = ADAPTIVE_THRESH_GAUSSIAN_C; //ADAPTIVE_THRESH_MEAN_C
@@ -77,6 +98,24 @@ int offset = 0;
 
 typedef OutputArray OutputArrayOfArrays;
 typedef OutputArray InputOutputArray;
+
+
+Rect areas[7];
+vector<qcard> playingCards[7];
+// dimezije sredniskih kart
+
+//igralci
+int igralci[7];
+int scores[7];
+
+void print_help() {
+    printf("\nPress numbers 1-6 to capture cards of players 1-6\n\
+Press number 0 to capture community cards\n\
+Press q twice to quit\n\
+Press h to write this message\n\n\
+--------------------------------------------------\n\n");
+}
+
 
 Mat do_morphology(int mode, Mat src) {
 
@@ -104,26 +143,16 @@ Mat do_morphology(int mode, Mat src) {
     return dst;
 }
 
+
+
 Mat preprocess_image(Mat image) {
-    //"""Returns a grayed and adaptively thresholded camera image."""
+    // pretvorim sliko v sivinsko in thresholdam
 
     Mat gray, blur, thresh;
     cvtColor(image, gray, COLOR_BGR2GRAY);
 
     GaussianBlur(gray, blur, Size(5,5), 0);
 
-
-/*
-    #ifndef ADAPTIVE
-    createTrackbar("Threshold value", WINDOW_NAME, &threshold_value, 255);
-    #else
-    createTrackbar("Block size", WINDOW_NAME, &block_size, 40);
-    createTrackbar("Offset", WINDOW_NAME, &offset, 50);
-    #endif
-
-    */
-
-    //threshold(gray, thresh, threshold_value, 255, threshold_type);
     #ifndef ADAPTIVE
         threshold(gray, thresh, threshold_value, 255, threshold_type);
     #else
@@ -131,13 +160,6 @@ Mat preprocess_image(Mat image) {
     #endif
     
     return thresh;
-}
-
-
-bool compareContourAreas ( std::vector<cv::Point> contour1, std::vector<cv::Point> contour2 ) {
-    double i = fabs( contourArea(cv::Mat(contour1)) );
-    double j = fabs( contourArea(cv::Mat(contour2)) );
-    return ( i < j );
 }
 
 int argMin(std::vector<float> x) { return std::distance(x.begin(), std::min_element(x.begin(), x.end())); }
@@ -172,7 +194,7 @@ std::vector<float> extractPoints(std::vector<cv::Point2f> pts, char s) {
 }
 
 Mat cutflat_card(Mat image, std::vector<cv::Point> pts, int h, int w) {
-    // convert to Point2f
+    // vrne ploscato sliko karte dimenzije 200 x 300
     std::vector<cv::Point2f> pts_;
     for (int i = 0; i < pts.size(); i++) {
         pts_.push_back(Point2f((float)pts[i].x, (float)pts[i].y));
@@ -189,6 +211,7 @@ Mat cutflat_card(Mat image, std::vector<cv::Point> pts, int h, int w) {
     cv::Point2f topright;
     cv::Point2f bottomleft;
 
+    
     std::vector<float> xs = extractPoints(pts_, 'x');
     std::vector<float> ys = extractPoints(pts_, 'y');
 
@@ -200,6 +223,9 @@ Mat cutflat_card(Mat image, std::vector<cv::Point> pts, int h, int w) {
             temp.resize(size, i);
         }
     }
+
+    // izberem krajne tocke
+
     if (ys[temp[0]] > ys[temp[1]]) {
         topright = pts[temp[1]];
         bottomleft = pts[temp[0]];
@@ -209,18 +235,16 @@ Mat cutflat_card(Mat image, std::vector<cv::Point> pts, int h, int w) {
     }
 
 
-    //cout << topleft << " | " << topright  << "\n" << bottomleft << " | " << bottomright  << "\n";
-
-    if (w <= 0.87*h) {// If card is vertically oriented
-        //cout << 1 << "\n";
+    if (w <= 0.87*h) {// ce je karta vertikalno orientirana
+    
         rect[0] = topleft;
         rect[1] = topright;
         rect[2] = bottomright;
         rect[3] = bottomleft;
     }
 
-    if (w >= 1.15*h) {// If card is horizontally oriented
-        //cout << 2 << "\n";
+    if (w >= 1.15*h) {// ce je karta horizontalno orientirana
+    
         rect[0] = bottomleft;
         rect[1] = topleft;
         rect[2] = topright;
@@ -228,17 +252,16 @@ Mat cutflat_card(Mat image, std::vector<cv::Point> pts, int h, int w) {
     }
 
     if (w > 0.87*h && w < 1.15*h) {//If card is diamond oriented
-        //cout << 3 << "\n";
-        // If furthest left point is higher than furthest right point,
-        // card is tilted to the left.
+        // če je najbolj leva tocka visje od najbolj desne -> karta najgnjena levo
+        
         if (ys[argMin(xs)] <= ys[argMax(xs)]) {
             rect[0] = topright; // Top left
             rect[1] = topleft; // Top right
             rect[2] = bottomleft; // Bottom right
             rect[3] = bottomright; // Bottom left
         }
-        // If furthest left point is lower than furthest right point,
-        // card is tilted to the right
+        // če je najbolj leva tocka nizje od najbolj desne -> karta najgnjena desno
+
         if (ys[argMin(xs)] > ys[argMax(xs)]) {
             rect[0] = topleft; // Top left
             rect[1] = bottomleft; // Top right
@@ -253,6 +276,8 @@ Mat cutflat_card(Mat image, std::vector<cv::Point> pts, int h, int w) {
 
     // Create destination array, calculate perspective transform matrix,
     // and warp card image
+
+    // z getperspectiveTransform izracuman matriko za transformacijo in jo warpam
     Mat warp;
     std::vector<cv::Point2f> dst = pts_;
     dst[0] = Point(0,0);
@@ -260,21 +285,15 @@ Mat cutflat_card(Mat image, std::vector<cv::Point> pts, int h, int w) {
     dst[2] = Point(maxWidth-1,maxHeight-1);
     dst[3] = Point(0, maxHeight-1);
 
-    //pointsum(dst);
     Mat M = getPerspectiveTransform(rect,dst);
     warpPerspective(image, warp, M, Size(maxWidth, maxHeight));
-
-    imshow("da vidimo", warp);
 
     return warp;
 }
 
 vector<int> find_cards(Mat thresh_image, vector<vector<Point> > contours, vector<Vec4i> hierarchy) {
-    //"""Finds all card-sized contours in a thresholded camera image.
-    //Returns the number of cards, and a list of card contours sorted
-    //from largest to smallest."""
+    // vrne vektor(enako dolg kot contours), ki za vsak contour pove ce je karta ali ne
 
-    // If there are no contours, do nothing
     if (contours.size() == 0) {
         vector<int> empty(0, 0);
         return empty;
@@ -283,21 +302,24 @@ vector<int> find_cards(Mat thresh_image, vector<vector<Point> > contours, vector
     
     vector<int> cnt_is_card(contours.size(), 0);
 
-    // Determine which of the contours are cards by applying the
-    // following criteria: 1) Smaller area than the maximum card size,
-    // 2), bigger area than the minimum card size, 3) have no parents,
-    // and 4) have four corners
+    // kriteriji za karto:
+    //1) Ploscina karte v mejah minimalne in maximalne podane meje
+    //2) nima starsev,
+    //4) ima 4 kote
 
     for (int i = 0; i < contours.size(); i++) {
 
         int size = contourArea(contours[i]);
+        
         double perimeter = arcLength(contours[i],true);
         std::vector<cv::Point> approx;
         approxPolyDP(contours[i], approx, 0.01*perimeter,true);
 
         
-        if ((size < CARD_MAX_AREA) && (size > CARD_MIN_AREA)
-            && (hierarchy[i][3] == -1) && (approx.size() == 4)) {
+        if ((size < CARD_MAX_AREA) && 
+            (size > CARD_MIN_AREA) && 
+            (hierarchy[i][3] == -1) && 
+            (approx.size() == 4)) {
             //cout << size << "\n";
             cnt_is_card[i] = 1;
         }
@@ -309,71 +331,39 @@ vector<int> find_cards(Mat thresh_image, vector<vector<Point> > contours, vector
 }
 
 qcard preprocess_card(Mat image, vector<Point> cardContour) {
-    //Mat image = preprocess_image(frame);
+    // shranimo podatke o karti (grb, cifra, slika) v struct qcard in ga vrnemo
 
-    
+    qcard queryCard;
 
-/*
-
-    Mat output;
-    image.copyTo(output);
-    vector<vector<Point> > contours;
-    vector<Vec4i> hierarchy;
-
-    /// Find contours
-    findContours( output, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0) );
-
-
-    /// Draw contours
-    Mat drawing = Mat::zeros( output.size(), CV_8UC3 );
-    for( int i = 0; i< contours.size(); i++ )
-    {
-       //Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
-       //drawContours( drawing, contours, i, Scalar(120, 100, 100), 2, 8, hierarchy, 0, Point() );
-    }
-
-    // sort contours
-    std::sort(contours.begin(), contours.end(), compareContourAreas);
-
-    // grab contours
-    drawContours( drawing, contours, contours.size()-1, Scalar(200, 200, 200), 2, 8, hierarchy, 0, Point() );
-    std::vector<cv::Point> cardContour = contours[contours.size()-1];
-    //std::vector<cv::Point> smallestContour = contours[0];
-
-    for (int i = 0; i < approx.size(); i++) {
-    }
-
-    */
-
-    //Mat drawing = Mat::zeros( image.size(), CV_8UC3 );
-
-    //cout << drawing << "\n";
-
+    // zaznamo robne točke iz contoure
     std::vector<cv::Point> approx;
     double perimeter = arcLength(cardContour,true);
     approxPolyDP(cardContour, approx, 0.01*perimeter,true);
 
-    
-
-    //cout << approx << "\n";
-
-    int x, y, width, height;
+    int x, y, w, h;
 
     Rect boundRect = boundingRect(cardContour);
-    //cout << boundRect << "\n";
-    int h = boundRect.height;
-    int w = boundRect.width;
 
-    //rectangle(drawing, boundRect, Scalar(200, 200, 200));
+    x = boundRect.x;
+    y = boundRect.y;
+    h = boundRect.height;
+    w = boundRect.width;
 
+    queryCard.center.x = x + (int)(w/2);
+    queryCard.center.y = y + (int)(h/2);
+
+    
+    // sliko zravnamo in preprocesirano (threshold)
     Mat card = cutflat_card(image, approx, h, w);
 
 
     int corner_width = 35;
     int corner_height = 70;
-    // Grab corner of card image, zoom, and threshold
+    
+    //zajamemo kot karte, kjer se nahajata grb in cifra
     Mat corner_gray = card(Rect(0,0,corner_width, corner_height));
     
+    // zoomiramo 4x
     Mat corner_zoom;
     resize(corner_gray, corner_zoom, Size(0,0), 4, 4);
 
@@ -383,22 +373,17 @@ qcard preprocess_card(Mat image, vector<Point> cardContour) {
     Mat corner_blur;
     GaussianBlur(corner_zoom, corner_blur, Size(5,5), 0);
 
+    //thresholdamo da dobimo obratno barvno paleto
     threshold(corner_zoom, corner_zoom, threshold_value, 255, THRESH_BINARY_INV);
 
     Mat corner;
     corner_zoom.copyTo(corner);
 
-
-
     vector<vector<Point> > corner_contours;
     vector<Vec4i> corner_hierarchy;
 
+    // poiscemo countoure v kotu
     findContours( corner_zoom, corner_contours, corner_hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0) );
-
-
-    //drawContours( corner_blur, corner_contours, 0, Scalar(200, 200, 200), 2, 8, corner_hierarchy, 0, Point() );
-
-    //drawContours( corner_blur, corner_contours, 1, Scalar(200, 200, 200), 2, 8, corner_hierarchy, 0, Point() );
 
     // sestejemo vse tocke contourjev.. najmanjsi in najvecji so najblizji vogali
     int s = 1;
@@ -419,118 +404,97 @@ qcard preprocess_card(Mat image, vector<Point> cardContour) {
     int cx = (int)corner_contour[cxi].x;
     int cy = (int)corner_contour[cyi].y;
 
-    Rect crect = Rect(cx,cy,RANK_WIDTH,RANK_HEIGHT + SUIT_HEIGHT);
 
+    //Rect crect = Rect(cx,cy,RANK_WIDTH,RANK_HEIGHT + SUIT_HEIGHT);
+
+    // izoliramo kot
     Mat figure = corner(Rect(cx,cy,RANK_WIDTH,RANK_HEIGHT + SUIT_HEIGHT));
 
-    //threshold(figure, figure, threshold_value, 255, THRESH_BINARY_INV);
-
-    //cout << corner_contours.size() << "\n";
-    //imshow("vogal blur", corner);
-    //imshow("vogal blur", figure);
-
-    //string fileName = test_names[number];
-    //string path = img_path + fileName + ".img";
-
-    //cout << path << "\n";
-
-    
-    qcard queryCard;
-
-    //queryCard->rank = "Face down";
-    //queryCard->suit = "Face down";
-
+    // posebej izrezemo cifro in grb
     Mat rank = figure(Rect(0,0,RANK_WIDTH,RANK_HEIGHT));
     Mat suit = figure(Rect(0,RANK_HEIGHT,SUIT_WIDTH,SUIT_HEIGHT));
 
+    // shranimo vse podatke v qcard
+    queryCard.rank = (char*)malloc(10*sizeof(char));
+    queryCard.rank = (char*)"";
+
+    queryCard.suit = (char*)malloc(10*sizeof(char));
+    queryCard.suit = (char*)"";
     queryCard.rank_img = rank;
     queryCard.suit_img = suit;
     queryCard.contour = cardContour;
-
-
-    //imwrite(img_path + fileName + ".jpg", train_img);
-    //imshow("suit", rank);
+    queryCard.detected = 0;
 
     
     return queryCard;
-    
-    //return corner_gray;
 }
 
+int checkDetectedCard(qcard card) {
+    // preveri ce je karta uspesno zaznana
+    if (strcmp(card.rank, "Unknown") == 0 || strcmp(card.rank, "") == 0) {
+        return 0;
+    }
+    if (strcmp(card.suit, "Unknown") == 0 || strcmp(card.suit, "") == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+int allDetected(vector<qcard> cards) {
+    // preveri ce so vse karte uspesno zaznane
+    for (int i = 0; i < cards.size(); i++) {
+        if (cards[i].detected == 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
 qcard match_card(qcard card, vector<train_image> train_ranks, vector<train_image> train_suits) {
-    //"""Finds best rank and suit matches for the query card. Differences
-    //the query card rank and suit images with the train rank and suit images.
-    //The best match is the rank or suit image that has the least difference."""
+
+    // poisce cifro in grb, ki se najbolje ujemata s pomocjo testnih slik
 
     int best_rank_match_diff = 10000;
     int best_suit_match_diff = 10000;
-    string best_rank_match_name = "Unknown";
-    string best_suit_match_name = "Unknown";
-    string best_rank_name = "Unknown";
-    string best_suit_name = "Unknown";
-    int i = 0;
+    char* best_rank_match_name = (char*)malloc(10*sizeof(char));
+    best_rank_match_name = (char*)"Unknown";
+    char* best_suit_match_name = (char*)malloc(10*sizeof(char));
+    best_suit_match_name = (char*)"Unknown";
+    char* best_rank_name = (char*)malloc(10*sizeof(char));
+    best_rank_name = (char*)"Unknown";
+    char* best_suit_name = (char*)malloc(10*sizeof(char));
+    best_suit_name = (char*)"Unknown";
 
-    // If no contours were found in query card in preprocess_card function,
-    // the img size is zero, so skip the differencing process
-    // (card will be left as Unknown)
+    // slika mora biti vecja od nic
     if ((card.rank_img.size() != Size(0,0)) && (card.suit_img.size() != Size(0,0))) {
-
-        //imshow("card",card.rank_img);
-        //imshow("train",train_ranks[0].image);
-        //absdiff(card.rank_img, train_ranks[1].image, diff_img);
-
-        //imshow("train",diff_img);
-
         
-        // Difference the query card rank image from each of the train rank images,
-        // and store the result with the least difference
+        // izracunamo razliko med cifro in testno cifro, ter shranimo najboljse ujemanje
         for (int i = 0; i < train_ranks.size(); i++) {
-            //cout << card.rank_img.size() << " : " << train_ranks[i].image.size() << "\n";
 
             Mat diff_img;
             absdiff(card.rank_img, train_ranks[i].image, diff_img);
             int rank_diff = (int)(sum(diff_img)[0]/255);
-
-
-            //cout << rank_diff << "\n";
             
             if (rank_diff < best_rank_match_diff) {
 
-                //best_rank_diff_img = diff_img
                 best_rank_match_diff = rank_diff;
                 best_rank_name = train_ranks[i].name;
             }
-
-            /*
-            imshow("bla", diff_img);
-            waitKey(0);
-            */
         }
 
 
-        // Same process with suit images
+        // izracunamo razliko med gtbom in testno grbom, ter shranimo najboljse ujemanje
         for (int i = 0; i < train_suits.size(); i++) {
-            //cout << card.suit_img.size() << " : " << train_suits[i].image.size() << "\n";
 
             Mat diff_img;
             absdiff(card.suit_img, train_suits[i].image, diff_img);
             int suit_diff = (sum(diff_img)[0]/255);
-
-            //cout << suit_diff << "\n";
             
             if (suit_diff < best_suit_match_diff) {
 
-                //best_rank_diff_img = diff_img
                 best_suit_match_diff = suit_diff;
                 best_suit_name = train_suits[i].name;
             }
-
-
-            /*
-            imshow("blah", diff_img);
-            waitKey(0);
-            */
         }
     }
 
@@ -549,16 +513,34 @@ qcard match_card(qcard card, vector<train_image> train_ranks, vector<train_image
         card.suit = best_suit_match_name;
     }
 
-    //cout << "diff: " << best_rank_match_diff << " | " << best_suit_match_diff << "\n";
-    //cout << "diff: " << best_rank_match_name << " | " << best_suit_match_name << "\n";
+    // preverimo ce je karta pravilno zaznana in jo oznacimo
+    card.detected = checkDetectedCard(card);
 
-    // Return the identiy of the card and the quality of the suit and rank match
-    //return best_rank_match_name, best_suit_match_name, best_rank_match_diff, best_suit_match_diff
+    //cout << "match: " << card.rank << " of " << card.suit << "\n";
 
     return card;
 }
 
+Mat draw_results(Mat image, qcard card) {
+    // narisemo rezultat karte na zaznano karto
+
+    int x = card.center.x;
+    int y = card.center.y;
+
+    string rank_name = card.rank;
+    string suit_name = card.suit;
+
+    putText(image,(rank_name+" of"),Point(x-60,y-10),FONT_HERSHEY_COMPLEX,1,(0,0,0),3,LINE_AA);
+    putText(image,(rank_name+" of"),Point(x-60,y-10),FONT_HERSHEY_COMPLEX,1,(50,200,200),2,LINE_AA);
+
+    putText(image,suit_name,Point(x-60,y+25),FONT_HERSHEY_COMPLEX,1,(0,0,0),3,LINE_AA);
+    putText(image,suit_name,Point(x-60,y+25),FONT_HERSHEY_COMPLEX,1,(50,200,200),2,LINE_AA);
+    
+    return image;
+}
+
 vector<train_image> load_train_ranks() {
+    // nalozimo testne slike cifer
 
     vector<train_image> ranks;
     for (int i = 0; i < 13; i++) {
@@ -572,6 +554,7 @@ vector<train_image> load_train_ranks() {
 }
 
 vector<train_image> load_suit_ranks() {
+    //nalozimo testne slike grbov
 
     vector<train_image> suits;
     for (int i = 13; i < 17; i++) {
@@ -585,109 +568,360 @@ vector<train_image> load_suit_ranks() {
 }
 
 
+vector<qcard> getCards(Mat frame, Rect area) {
+
+    // poiscemo contourje in iz njih locimo tiste ki so karte
+    // vrnemo vektor vseh zaznanih qcardov
+
+    Mat output, thresh;
+    frame.copyTo(output);
+    frame.copyTo(thresh);
+    output = output(area);
+    thresh = thresh(area);
+    vector<vector<Point> > contours;
+    vector<Vec4i> hierarchy;
+
+    findContours( output, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0) );
+
+    // iz poiskanih contourjev poiscemo karte
+    vector<int> cnt_is_card = find_cards(output, contours, hierarchy);
+    
+    vector<qcard> cards;
+    // sprehodimo se cez conturje ki so karte int jih sprocesiramo
+    for (int i = 0; i < contours.size(); i++) {
+        if (cnt_is_card[i] == 1) {
+            
+            cards.push_back(preprocess_card(thresh, contours[i]));
+        }
+    }
+
+    
+    int max = 0;
+    for (int i = 0; i < cards.size(); i++) {
+
+        while(cards[i].detected == 0 && max < 10) {
+
+            cards[i] = match_card(cards[i], train_ranks, train_suits);
+
+            max++;
+        }
+    }
+
+    return cards;
+}
+
+Mat printMiddle(Mat frame, vector<qcard> cards) {
+    // napisemo karte iz sredine
+
+    putText(frame, "Community",Point(3500,50),FONT_HERSHEY_COMPLEX,1.5,Scalar(0,0,0),3,LINE_AA);
+    putText(frame, "Community",Point(3500,50),FONT_HERSHEY_COMPLEX,1.5,Scalar(255,255,255),2,LINE_AA);
+
+    putText(frame, "cards:",Point(3500,90),FONT_HERSHEY_COMPLEX,1.5,Scalar(0,0,0),3,LINE_AA);
+    putText(frame, "cards:",Point(3500,90),FONT_HERSHEY_COMPLEX,1.5,Scalar(255,255,255),2,LINE_AA);
+    for (int i = 0; i < cards.size(); i++) {
+        int x = 3600;
+        int y = 150 + (i * 150);
+
+
+        char* fullRank = (char*)malloc(150*sizeof(char)); strcpy(fullRank, "");
+        strcat(fullRank, cards[i].rank); strcat(fullRank, " of");
+        putText(frame,fullRank,Point(x-60,y-10),FONT_HERSHEY_COMPLEX,1.5,Scalar(0,0,0),3,LINE_AA);
+        putText(frame,fullRank,Point(x-60,y-10),FONT_HERSHEY_COMPLEX,1.5,Scalar(255,255,255),2,LINE_AA);
+
+        putText(frame,cards[i].suit,Point(x-60,y+30),FONT_HERSHEY_COMPLEX,1.5,(0,0,0),3,LINE_AA);
+        putText(frame,cards[i].suit,Point(x-60,y+30),FONT_HERSHEY_COMPLEX,1.5,Scalar(255,255,255),2,LINE_AA);
+    }
+
+    return frame;
+}
+
+Mat printCards(Mat frame, vector<qcard> cards, int ys, string playerNum) {
+    // napisemo karte igralcev
+    int x = 150;
+
+    putText(frame, playerNum,Point(20,ys),FONT_HERSHEY_COMPLEX,2,Scalar(0,0,0),3,LINE_AA);
+    putText(frame, playerNum,Point(20,ys),FONT_HERSHEY_COMPLEX,2,Scalar(255,255,255),2,LINE_AA);
+    for (int i = 0; i < cards.size(); i++) {
+        int y = ys - 20 + (i * 50);
+
+        char* fullName = (char*)malloc(150*sizeof(char)); strcpy(fullName, "");
+        strcat(fullName, cards[i].rank); strcat(fullName, " of "); strcat(fullName, cards[i].suit);
+        putText(frame,(fullName),Point(x-60,y-10),FONT_HERSHEY_COMPLEX,1.5,Scalar(0,0,0),3,LINE_AA);
+        putText(frame,(fullName),Point(x-60,y-10),FONT_HERSHEY_COMPLEX,1.5,Scalar(255,255,255),2,LINE_AA);
+        /*
+        putText(frame,cards[i].suit,Point(x-60,y+25),FONT_HERSHEY_COMPLEX,1.5,(0,0,0),3,LINE_AA);
+        putText(frame,cards[i].suit,Point(x-60,y+25),FONT_HERSHEY_COMPLEX,1.5,Scalar(255,255,255),2,LINE_AA);
+        */
+    }
+
+    return frame;
+}
+
+Mat drawBorders(Mat frame) {
+    // narise robove igralcev in sredine
+
+    rectangle(frame, areas[0], borderColor, 3);
+    if (igralci[1] == 1) {
+        rectangle(frame, areas[1], borderOnlineColor, 3);
+    } else {
+        rectangle(frame, areas[1], borderOfflineColor, 3);
+    }
+    if (igralci[2] == 1) {
+        rectangle(frame, areas[2], borderOnlineColor, 3);
+    } else {
+        rectangle(frame, areas[2], borderOfflineColor, 3);
+    }
+    if (igralci[3] == 1) {
+        rectangle(frame, areas[3], borderOnlineColor, 3);
+    } else {
+        rectangle(frame, areas[3], borderOfflineColor, 3);
+    }
+    if (igralci[4] == 1) {
+        rectangle(frame, areas[4], borderOnlineColor, 3);
+    } else {
+        rectangle(frame, areas[4], borderOfflineColor, 3);
+    }
+    if (igralci[5] == 1) {
+        rectangle(frame, areas[5], borderOnlineColor, 3);
+    } else {
+        rectangle(frame, areas[5], borderOfflineColor, 3);
+    }
+    if (igralci[6] == 1) {
+        rectangle(frame, areas[6], borderOnlineColor, 3);
+    } else {
+        rectangle(frame, areas[6], borderOfflineColor, 3);
+    }
+
+    return frame;
+}
+
+
 int main(int argc, char** argv) {
 
-    test_names.push_back("Ace"); // 0
-    test_names.push_back("Two"); // 1
-    test_names.push_back("Three"); // 2
-    test_names.push_back("Four"); // 3
-    test_names.push_back("Five"); // 4
-    test_names.push_back("Six"); // 5
-    test_names.push_back("Seven"); // 6
-    test_names.push_back("Eight"); // 7
-    test_names.push_back("Nine"); // 8
-    test_names.push_back("Ten"); // 9
-    test_names.push_back("Jack"); // 10
-    test_names.push_back("Queen"); // 11
-    test_names.push_back("King"); // 12
-    test_names.push_back("Spades"); // 13
-    test_names.push_back("Hearts"); // 14
-    test_names.push_back("Clubs"); // 15
-    test_names.push_back("Diamonds"); // 16
+    char* path = (char*)malloc(64*sizeof(char));
+    if (argc > 1) {
 
-    //namedWindow(WINDOW_NAME, 4);
-    //cout << CV_WINDOW_AUTOSIZE;
+        path = argv[1];
+    } else {
 
-    //videostream = cv2.VideoCapture(0)
-    /*
-    VideoCapture camera("video.avi");
+        cout << "Not enough arguments\n";
+        return 1;
+    }
 
-    //camera.set(CV_CAP_PROP_FPS, 10);
+    // shranimo si vsa imena kart
+    test_names = (char**)malloc(17*sizeof(char*));
+
+    test_names[0] = (char*)malloc(10*sizeof(char));     test_names[0] = (char*)"Ace"; // 0
+    test_names[1] = (char*)malloc(10*sizeof(char));     test_names[1] = (char*)"Two"; // 1
+    test_names[2] = (char*)malloc(10*sizeof(char));     test_names[2] = (char*)"Three"; // 2
+    test_names[3] = (char*)malloc(10*sizeof(char));     test_names[3] = (char*)"Four"; // 3
+    test_names[4] = (char*)malloc(10*sizeof(char));     test_names[4] = (char*)"Five"; // 4
+    test_names[5] = (char*)malloc(10*sizeof(char));     test_names[5] = (char*)"Six"; // 5
+    test_names[6] = (char*)malloc(10*sizeof(char));     test_names[6] = (char*)"Seven"; // 6
+    test_names[7] = (char*)malloc(10*sizeof(char));     test_names[7] = (char*)"Eight"; // 7
+    test_names[8] = (char*)malloc(10*sizeof(char));     test_names[8] = (char*)"Nine"; // 8
+    test_names[9] = (char*)malloc(10*sizeof(char));     test_names[9] = (char*)"Ten"; // 9
+    test_names[10] = (char*)malloc(10*sizeof(char));     test_names[10] = (char*)"Jack"; // 10
+    test_names[11] = (char*)malloc(10*sizeof(char));     test_names[11] = (char*)"Queen"; // 11
+    test_names[12] = (char*)malloc(10*sizeof(char));     test_names[12] = (char*)"King"; // 12
+    test_names[13] = (char*)malloc(10*sizeof(char));     test_names[13] = (char*)"Spades"; // 13
+    test_names[14] = (char*)malloc(10*sizeof(char));     test_names[14] = (char*)"Hearts"; // 14
+    test_names[15] = (char*)malloc(10*sizeof(char));     test_names[15] = (char*)"Clubs"; // 15
+    test_names[16] = (char*)malloc(10*sizeof(char));     test_names[16] = (char*)"Diamonds"; // 16
+
+    
+    VideoCapture camera(path);
 
     cout << "Framerate: " << camera.get(CV_CAP_PROP_FPS) << endl;
-   */
-
 
     // nalozimo testne slike
-    vector<train_image> train_ranks = load_train_ranks();
-    vector<train_image> train_suits = load_suit_ranks();
+    train_ranks = load_train_ranks();
+    train_suits = load_suit_ranks();
 
-    //imshow("ace", train_ranks[0].image);
-    //imshow("spade", train_suits[0].image);
+    //nastavimo dimeznije igralcev
+    areas[0] = Rect(700, 700, 2200, 600);
+
+    areas[1] = Rect(500, 50, 800, 600);
+    areas[2] = Rect(1500, 50, 800, 600);
+    areas[3] = Rect(2500, 50, 800, 600);
+    areas[4] = Rect(500, 1350, 800, 600);
+    areas[5] = Rect(1500, 1350, 800, 600);
+    areas[6] = Rect(2500, 1350, 800, 600);
 
 
-    ////// ---- MAIN LOOP ---- //////
 
     Mat frame, thresh, drawing;
 
-    // Begin capturing frames
-    //while (true) {
+    // nastavimo stevilo igralcev
+    int stIgralcev;
+    for (int i = 0; i < 7; i++) {
+        igralci[i] = 0;
+        scores[i] = 0;
+    }
 
-        //camera.read(frame);
-        frame = imread(argv[1], CV_LOAD_IMAGE_COLOR);
-            //break;
-        //train(image, 4);
-        //preprocesiramo sliko
-        thresh = preprocess_image(frame);
+    print_help();
 
+    cout << "vnesite št. igralcev [1 - 6]: ";
+    cin >> stIgralcev;
 
-        // poiscemo contourje in iz njih locimo tiste ki so karte
-        Mat output;
-        thresh.copyTo(output);
-        vector<vector<Point> > contours;
-        vector<Vec4i> hierarchy;
+    for (int i =0; i < stIgralcev; i++) {
+        int ix;
+        cout << "vnesite št. igralca, ki bo igral [1 - 6]: ";
+        cin >> ix;
 
-        findContours( output, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0) );
+        igralci[ix] = 1;
+    }
 
-        // iz poiskanih contourjev poiscemo karte
-        vector<int> cnt_is_card = find_cards(output, contours, hierarchy);
+    int s = 0;
+
+    while (true) {
+
+        camera.read(frame);
+
+        int key;
+        if ((key = waitKey(1)) >= 0) {}
         
-        vector<qcard> cards;
-        // sprehodimo se cez conturje ki so karte int jih sprocesiramo
-        for (int i = 0; i < contours.size(); i++) {
-            if (cnt_is_card[i] == 1) {
-                //cout << contours[i] << "\n";
-                cards.push_back(preprocess_card(thresh, contours[i]));
-
-            }
-        }
-
-        for (int i = 0; i < cards.size(); i++) {
-            cards[i] = match_card(cards[i], train_ranks, train_suits);
-        }
-
-        for (int i = 0; i < cards.size(); i++) {
-            cout << "Card is " << cards[i].rank << " of " << cards[i].suit << "\n";
-        }
-
-        //imshow("rank", cards[0].rank_img);
-        //imshow("karta", cards[0].suit_img);
-
-        //drawing = getSuitRank(image, GET_RANK);
-
-        /*
-
-        */
-        resize(thresh, thresh, Size(720, 1080));
-        imshow(WINDOW_NAME, thresh);
-        
-        
-        //if (waitKey(30) >= 0)
-        //    break;
+        s = 0;
+        while (key == middle && s < 30) {
             
-    //}
-        //camera.release();
+            thresh = preprocess_image(frame);
+            playingCards[0] = getCards(thresh, areas[0]);
+            frame = drawBorders(frame);
+
+            imshow(WINDOW_NAME, frame);
+            camera.read(frame);
+
+            if (allDetected(playingCards[0]) == 1) {
+                break;
+            }
+
+            s++;
+        }
+        s = 0;
+        while (igralci[1] == 1 && key == player1 && s < 30) {
+
+            thresh = preprocess_image(frame);
+            playingCards[1] = getCards(thresh, areas[1]);
+            frame = drawBorders(frame);
+
+            imshow(WINDOW_NAME, frame);
+            camera.read(frame);
+
+            if (allDetected(playingCards[1]) == 1) {
+                break;
+            }
+
+            s++;
+        }
+        s = 0;
+        while (igralci[2] == 1 && key == player2 && s < 30) {
+
+            thresh = preprocess_image(frame);
+            playingCards[2] = getCards(thresh, areas[2]);
+            frame = drawBorders(frame);
+
+            imshow(WINDOW_NAME, frame);
+            camera.read(frame);
+
+            if (allDetected(playingCards[2]) == 1) {
+                break;
+            }
+
+            s++;
+        }
+        s = 0;
+        while (igralci[3] == 1 && key == player3 && s < 30) {
+
+            thresh = preprocess_image(frame);
+            playingCards[3] = getCards(thresh, areas[3]);
+            frame = drawBorders(frame);
+
+            imshow(WINDOW_NAME, frame);
+            camera.read(frame);
+
+            if (allDetected(playingCards[3]) == 1) {
+                break;
+            }
+
+            s++;
+        }
+        s = 0;
+        while (igralci[4] == 1 && key == player4 && s < 30) {
+
+            thresh = preprocess_image(frame);
+            playingCards[4] = getCards(thresh, areas[4]);
+            frame = drawBorders(frame);
+
+            imshow(WINDOW_NAME, frame);
+            camera.read(frame);
+
+            if (allDetected(playingCards[4]) == 1) {
+                break;
+            }
+
+            s++;
+        }
+        s = 0;
+        while (igralci[5] == 1 && key == player5 && s < 30) {
+
+            thresh = preprocess_image(frame);
+            playingCards[5] = getCards(thresh, areas[5]);
+            frame = drawBorders(frame);
+
+            imshow(WINDOW_NAME, frame);
+            camera.read(frame);
+
+            if (allDetected(playingCards[5]) == 1) {
+                break;
+            }
+
+            s++;
+        }
+        s = 0;
+        while (igralci[6] == 1 && key == player6 && s < 30) {
+
+            thresh = preprocess_image(frame);
+            playingCards[6] = getCards(thresh, areas[6]);
+            frame = drawBorders(frame);
+
+            imshow(WINDOW_NAME, frame);
+            camera.read(frame);
+
+            if (allDetected(playingCards[6]) == 1) {
+                break;
+            }
+
+            s++;
+        }
+
+        if (key == 'h' || key == 'H') {
+
+            print_help();
+        }
+
+        if (key == 'q' || key == 'Q') {
+
+            cout << "exiting...\n";
+            break;
+        }
+        
+        frame = drawBorders(frame);
+
+        //narisemo zaznane karte
+        frame = printMiddle(frame, playingCards[0]);
+        frame = printCards(frame, playingCards[1], 550, "1:");
+        frame = printCards(frame, playingCards[2], 700, "2:");
+        frame = printCards(frame, playingCards[3], 850, "3:");
+        frame = printCards(frame, playingCards[4], 1000, "4:");
+        frame = printCards(frame, playingCards[5], 1150, "5:");
+        frame = printCards(frame, playingCards[6], 1300, "6:");
+
+
+        resize(frame, frame, Size(1920, 1080));
+        imshow(WINDOW_NAME, frame);
+            
+    }
+    camera.release();
 
     waitKey(0);
 }
-
